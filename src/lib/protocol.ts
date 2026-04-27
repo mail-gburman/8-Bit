@@ -24,6 +24,7 @@ export type SessionState = {
   config: PoemConfig
   selectedWords: SelectedWord[]
   transcript: TranscriptState
+  sessionSeed: number
 }
 
 export type ClientMessage =
@@ -37,37 +38,28 @@ export type ServerMessage = {
   payload: SessionState
 }
 
+// 10 phonetic variants per word — 2 are randomly picked each game via sessionSeed
 export const DEFAULT_CONFIG: PoemConfig = {
   title: 'Mouth Shore',
   poem: [
-    'Welcome',
-    'to',
-    'shore',
-    'where',
-    'mouths',
-    'arrive',
-    'in',
-    'waves',
-    'and',
-    'memory',
-    'mishears',
-    'every',
-    'name',
+    'Welcome', 'to', 'shore', 'where', 'mouths',
+    'arrive', 'in', 'waves', 'and', 'memory',
+    'mishears', 'every', 'name',
   ],
   variants: {
-    Welcome:  ['Willcome', 'Welcame'],
-    to:       ['too', 'tuw'],
-    shore:    ['shoar', 'sure'],
-    where:    ['wear', 'whare'],
-    mouths:   ['mowths', 'mouts'],
-    arrive:   ['arive', 'arryv'],
-    in:       ['inn', 'en'],
-    waves:    ['waives', 'weyvs'],
-    and:      ['annd', 'und'],
-    memory:   ['memoree', 'mimory'],
-    mishears: ['mishers', 'mishearz'],
-    every:    ['evry', 'ivory'],
-    name:     ['naim', 'nayme'],
+    Welcome:  ['Willcome', 'Welcame', 'Welcum', 'Welkome', 'Wulcum', 'Willkum', 'Welcohm', 'Wellkum', 'Whelkum', 'Welcoom'],
+    to:       ['too', 'tuw', 'toh', 'tue', 'twoo', 'tow', 'tu', 'toe', 'twu', 'tuu'],
+    shore:    ['shoar', 'sure', 'shor', 'showr', 'shoor', 'shoer', 'shuhr', 'shohr', 'shure', 'shoore'],
+    where:    ['wear', 'whare', 'wher', 'wheyr', 'whar', 'wehre', 'wayr', 'whear', 'wheyre', 'wherr'],
+    mouths:   ['mowths', 'mouts', 'muthz', 'mowtz', 'mauths', 'mooths', 'mowz', 'muthes', 'moths', 'mouwths'],
+    arrive:   ['arive', 'arryv', 'arriv', 'arryve', 'ahryve', 'arrivv', 'arryff', 'arivv', 'ariv', 'ahrriv'],
+    in:       ['inn', 'en', 'enn', 'yn', 'inne', 'ihn', 'ehn', 'iinn', 'ine', 'een'],
+    waves:    ['waives', 'weyvs', 'wavz', 'wayves', 'weyves', 'wavves', 'wayvz', 'weivz', 'waivz', 'waivves'],
+    and:      ['annd', 'und', 'ande', 'ahnd', 'andde', 'ann', 'aund', 'aunnd', 'andd', 'aaand'],
+    memory:   ['memoree', 'mimory', 'memree', 'memury', 'memmry', 'mimree', 'memery', 'memori', 'memmory', 'mimmory'],
+    mishears: ['mishers', 'mishearz', 'misheerz', 'myssherz', 'misherz', 'mishurz', 'missherz', 'mysheerz', 'mishearze', 'misshearz'],
+    every:    ['evry', 'ivory', 'everry', 'evree', 'ivree', 'evary', 'evury', 'evvry', 'ivery', 'evvery'],
+    name:     ['naim', 'nayme', 'naem', 'naimm', 'nayem', 'namm', 'nayim', 'naihm', 'naemm', 'nameey'],
   },
 }
 
@@ -82,5 +74,6 @@ export function createInitialSessionState(config: PoemConfig = DEFAULT_CONFIG): 
       updatedAt: null,
       active: false,
     },
+    sessionSeed: Math.trunc(Math.random() * 0xFFFFFFFF),
   }
 }

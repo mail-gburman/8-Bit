@@ -46,25 +46,34 @@ export function chunkWords(words: string[], size: number) {
   return groups
 }
 
-export function buildWaves(config: PoemConfig = DEFAULT_CONFIG) {
+// sessionSeed changes on every reset → different 2 variants from the pool each game
+export function buildWaves(config: PoemConfig = DEFAULT_CONFIG, sessionSeed: number = 0) {
   return chunkWords(config.poem, WAVE_SIZE).map((targets, index) => {
     const waveId = index + 1
+
     const mouths = seededShuffle(
-      targets.flatMap((target) => [
-        {
-          id: `${waveId}-${target}-${target}`,
-          label: target,
-          source: target,
-          isCorrect: true,
-        },
-        ...(config.variants[target] ?? []).map((label) => ({
-          id: `${waveId}-${target}-${label}`,
-          label,
-          source: target,
-          isCorrect: false,
-        })),
-      ]),
-      `${config.title}-${waveId}-${targets.join('-')}`,
+      targets.flatMap((target) => {
+        const pool = config.variants[target] ?? []
+        // Shuffle the variant pool with the session seed so we get different picks each game
+        const shuffledPool = seededShuffle(pool, `${sessionSeed}-${target}`)
+        const picked = shuffledPool.slice(0, 2)
+
+        return [
+          {
+            id: `${waveId}-${target}-correct`,
+            label: target,
+            source: target,
+            isCorrect: true,
+          },
+          ...picked.map((label) => ({
+            id: `${waveId}-${target}-${label}`,
+            label,
+            source: target,
+            isCorrect: false,
+          })),
+        ]
+      }),
+      `${config.title}-${waveId}-${targets.join('-')}-${sessionSeed}`,
     )
 
     return {

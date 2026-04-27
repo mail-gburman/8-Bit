@@ -77,13 +77,22 @@ body {
 
 /* ── Panel header ───────────────────────────────────────────────────────────── */
 
-.panel-header,
-.card-head {
+.panel-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 6px;
   margin-bottom: 6px;
+  flex-wrap: nowrap;       /* stays on one line */
+  flex-shrink: 0;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 4px;
   flex-wrap: wrap;
   flex-shrink: 0;
 }
@@ -116,25 +125,27 @@ h2 {
 
 .mode-pills {
   display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+  gap: 4px;
+  flex-wrap: nowrap;       /* single row — no header wrap */
   align-items: center;
+  overflow-x: auto;
 }
 
 .px-btn {
   appearance: none;
   font-family: 'Press Start 2P', monospace;
-  font-size: 7px;
+  font-size: 6px;
   border: var(--px-border);
   background: var(--px-white);
   color: var(--px-black);
-  padding: 6px 10px;
+  padding: 5px 8px;
   cursor: pointer;
   box-shadow: var(--px-shadow-sm);
   transition: transform 60ms, box-shadow 60ms;
   white-space: nowrap;
   line-height: 1.4;
   text-transform: uppercase;
+  flex-shrink: 0;
 }
 
 .px-btn:hover { transform: translate(-2px, -2px); box-shadow: 4px 4px 0 var(--px-black); }
@@ -447,10 +458,10 @@ h2 {
   gap: 6px;
   margin-top: 6px;
   flex-shrink: 0;
-  max-height: 180px;
+  height: 150px;
   overflow: hidden;
 }
-.bottom-grid > * { flex: 1 1 0; min-width: 0; }
+.bottom-grid > * { flex: 1 1 0; min-width: 0; overflow: hidden; }
 
 .console-card,
 .subtitle-card,
@@ -458,40 +469,61 @@ h2 {
   border: var(--px-border);
   background: var(--px-gray2);
   box-shadow: var(--px-shadow-sm);
-  padding: 10px;
+  padding: 6px 8px;
   color: var(--px-white);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .console-card h2,
 .subtitle-card h2 {
   color: var(--px-sand);
-  margin-bottom: 8px;
+  margin: 0;
+}
+
+/* bottom card heading row — single line, no wrap */
+.bottom-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.bottom-btns {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
 }
 
 /* ── Poem bar / chips ───────────────────────────────────────────────────────── */
 
 .poem-bar {
-  min-height: 64px;
-  margin: 8px 0;
+  min-height: 34px;
+  margin: 4px 0;
   border: 2px dashed var(--px-gray);
-  padding: 6px;
+  padding: 4px;
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
   align-content: flex-start;
   background: rgba(0,0,0,0.3);
+  overflow: hidden;
 }
 
 .poem-chip {
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
-  padding: 3px 8px;
+  min-height: 22px;
+  padding: 2px 6px;
   border: var(--px-border);
   background: var(--px-gray2);
   color: var(--px-white);
   font-family: 'Press Start 2P', monospace;
-  font-size: 7px;
+  font-size: 6px;
   box-shadow: var(--px-shadow-sm);
   animation: chip-snap 200ms steps(4, end);
 }
@@ -506,17 +538,17 @@ h2 {
 
 .poem-stream,
 .subtitle-text {
-  min-height: 80px;
-  font-size: 20px;
-  line-height: 1.4;
+  min-height: 28px;
+  font-size: 18px;
+  line-height: 1.3;
   font-family: 'VT323', monospace;
 }
 
 /* Full poem readout — all clicked words laid out as poem lines */
 .poem-full-text {
-  min-height: 100px;
-  margin-top: 8px;
-  padding: 10px;
+  min-height: 36px;
+  margin-top: 4px;
+  padding: 6px;
   border: 2px solid var(--px-gray);
   background: rgba(0,0,0,0.4);
   font-family: 'VT323', monospace;
@@ -535,16 +567,17 @@ h2 {
   margin: 0;
   padding: 0;
   display: grid;
-  gap: 4px;
+  gap: 2px;
+  overflow: hidden;
 }
 
 .mic-log li {
-  padding: 4px 8px;
+  padding: 2px 6px;
   background: var(--px-black);
   color: var(--px-green);
   font-family: 'VT323', monospace;
-  font-size: 18px;
-  border: 2px solid var(--px-green2);
+  font-size: 15px;
+  border: 1px solid var(--px-green2);
 }
 .mic-log li::before { content: '> '; }
 
@@ -662,29 +695,36 @@ h2 {
 .avatar-stage {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   flex: 1 1 0;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
+  overflow: hidden;        /* NO scroll — everything must fit */
+}
+
+.avatar-card {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .avatar-frame {
   display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  align-items: center;     /* CENTERED */
+  justify-content: center;
+  gap: 6px;
   border: 2px solid var(--px-term-fg);
   background: rgba(0,20,0,0.7);
-  padding: 10px 14px;
-  position: relative;
-  flex-wrap: wrap;
+  padding: 8px;
 }
 
 .avatar-img-wrapper {
   position: relative;
-  width: 128px;
-  height: 128px;
+  width: 88px;             /* smaller so everything fits */
+  height: 88px;
   image-rendering: pixelated;
   border: 3px solid var(--px-term-fg);
   box-shadow: 0 0 16px rgba(51,255,51,0.4), var(--px-shadow);
@@ -733,9 +773,9 @@ h2 {
 }
 
 .avatar-pick-btn {
-  width: 48px;
-  height: 48px;
-  border: 3px solid var(--px-term-dim);
+  width: 32px;
+  height: 32px;
+  border: 2px solid var(--px-term-dim);
   background: transparent;
   cursor: pointer;
   padding: 0;
@@ -758,13 +798,13 @@ h2 {
 
 .voice-select {
   font-family: 'VT323', monospace;
-  font-size: 18px;
+  font-size: 14px;
   border: 2px solid var(--px-term-fg);
   background: var(--px-term-bg);
   color: var(--px-term-fg);
-  padding: 4px 8px;
+  padding: 2px 4px;
   width: 100%;
-  margin-top: 6px;
+  margin-top: 4px;
   cursor: pointer;
 }
 .voice-select option { background: var(--px-term-bg); }
@@ -1086,6 +1126,72 @@ audio {
   margin: 6px 0 0;
   text-shadow: 0 0 4px var(--px-term-fg);
 }
+
+/* ── Inline delay control (performer panel) ─────────────────────────────────── */
+
+.delay-stepper {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.delay-stepper-label {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 5px;
+  color: var(--px-gray);
+}
+
+.delay-step-btn {
+  appearance: none;
+  border: 2px solid var(--px-gray);
+  background: var(--px-black);
+  color: var(--px-white);
+  font-family: 'Press Start 2P', monospace;
+  font-size: 9px;
+  line-height: 1;
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.delay-step-btn:hover { border-color: var(--px-sand); color: var(--px-sand); }
+.delay-step-btn:active { background: var(--px-gray2); }
+
+.delay-stepper-val {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 6px;
+  color: var(--px-sand);
+  min-width: 42px;
+  text-align: center;
+}
+
+/* ── Delay setting (admin panel) ────────────────────────────────────────────── */
+
+.delay-setting-row {
+  margin-bottom: 12px;
+  padding: 10px;
+  border: var(--px-border);
+  background: var(--px-term-bg);
+}
+
+.delay-input {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 11px;
+  text-align: center;
+  background: var(--px-black);
+  color: var(--px-term-amber);
+  border: 2px solid var(--px-term-amber);
+  padding: 6px 8px;
+}
+
+.delay-input::-webkit-inner-spin-button,
+.delay-input::-webkit-outer-spin-button { opacity: 1; }
 
 /* ── Responsive ─────────────────────────────────────────────────────────────── */
 

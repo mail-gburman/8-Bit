@@ -63,8 +63,10 @@ type SessionRecord = {
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const WS_PORT = 8787
-const API_BASE = `http://${typeof window !== 'undefined' ? window.location.hostname : 'localhost'}:${WS_PORT}`
+const LS_STATE    = 'mouth-shore-state'
+const LS_POEMS    = 'mouth-shore-poems'
+const LS_SESSIONS = 'mouth-shore-sessions'
+const LS_DELAY    = 'mouth-shore-tts-delay'
 
 const AVATAR_OPTIONS = [
   { seed: 'Moonbeam',  bg: 'b6e3f4' },
@@ -79,7 +81,74 @@ function dicebearUrl(seed: string, bg: string) {
   return `https://api.dicebear.com/9.x/pixel-art/png?seed=${encodeURIComponent(seed)}&size=64&backgroundColor=${bg}`
 }
 
-// ── Phonetic variant generator (no API needed) ────────────────────────────────
+// ── localStorage helpers ──────────────────────────────────────────────────────
+
+function lsGet<T>(key: string): T | null {
+  try {
+    const v = localStorage.getItem(key)
+    return v ? (JSON.parse(v) as T) : null
+  } catch { return null }
+}
+
+function lsSet(key: string, value: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* storage full */ }
+}
+
+function loadPoems(): StoredPoem[] {
+  const saved = lsGet<StoredPoem[]>(LS_POEMS) ?? []
+  if (!saved.find((p) => p.id === 'default')) {
+    saved.unshift({ ...DEFAULT_CONFIG, id: 'default', createdAt: 0, updatedAt: 0 })
+  }
+  return saved
+}
+
+function savePoems(poems: StoredPoem[]) { lsSet(LS_POEMS, poems) }
+
+function loadSessionHistory(): SessionRecord[] { return lsGet<SessionRecord[]>(LS_SESSIONS) ?? [] }
+function saveSessionHistory(sessions: SessionRecord[]) { lsSet(LS_SESSIONS, sessions) }
+
+function archiveSession(state: SessionState) {
+  const mistakes = state.selectedWords.filter((w) => !w.isCorrect).length
+  const record: SessionRecord = {
+    id: String(Date.now()),
+    poemTitle: state.config.title,
+    selectedWords: state.selectedWords,
+    accuracy: state.selectedWords.length
+      ? Math.round(((state.selectedWords.length - mistakes) / state.selectedWords.length) * 100)
+      : 100,
+    mistakes,
+    totalWords: state.config.poem.length,
+    startedAt: state.selectedWords[0]?.createdAt ?? Date.now(),
+    endedAt: Date.now(),
+  }
+  saveSessionHistory([record, ...loadSessionHistory()].slice(0, 50))
+}
+
+// ── Client message processor (pure — no React state) ─────────────────────────
+
+function processClientMessage(state: SessionState, msg: ClientMessage): SessionState {
+  switch (msg.type) {
+    case 'pick_word': {
+      const ts = Date.now()
+      return {
+        ...state,
+        selectedWords: [
+          ...state.selectedWords,
+          { id: ts, word: msg.payload.word, source: msg.payload.source, isCorrect: msg.payload.isCorrect, createdAt: ts },
+        ],
+      }
+    }
+    case 'update_config':
+      return { ...createInitialSessionState(msg.payload), sessionSeed: Math.trunc(Math.random() * 0xFFFFFFFF) }
+    case 'transcript_update':
+      return { ...state, transcript: msg.payload }
+    case 'reset_session':
+      if (state.selectedWords.length > 0) archiveSession(state)
+      return { ...createInitialSessionState(state.config), sessionSeed: Math.trunc(Math.random() * 0xFFFFFFFF) }
+  }
+}
+
+// ── Phonetic variant generator — up to 10 per word ───────────────────────────
 
 function generatePhoneticVariants(word: string): string[] {
   const w = word.toLowerCase().trim()
@@ -88,47 +157,53 @@ function generatePhoneticVariants(word: string): string[] {
 
   const rules: [RegExp, string][] = [
     // endings
-    [/ing$/,  "in'"], [/tion$/, 'shun'], [/ment$/, 'munt'],
-    [/er$/,   'ur'],  [/or$/,   'ur'],   [/ly$/,   'lee'],
-    [/ed$/,   't'],   [/ness$/, 'nus'],  [/ful$/,  'fool'],
-    [/ight/,  'ite'], [/ough/,  'off'],  [/ight$/, 'ite'],
+    [/ing$/, "in'"], [/tion$/, 'shun'], [/ment$/, 'munt'],
+    [/er$/, 'ur'],   [/or$/, 'ur'],     [/ly$/, 'lee'],
+    [/ed$/, 't'],    [/ness$/, 'nus'],  [/ful$/, 'fool'],
+    [/ight/, 'ite'], [/ough/, 'off'],
     // vowel clusters
     [/ay(?=\b)/, 'ai'], [/ai/, 'ay'], [/ee/, 'ea'], [/ea(?!d)/, 'ee'],
-    [/oo/,   'ou'],  [/ou(?!t)/, 'oo'], [/ow(?=\b)/, 'oh'],
+    [/oo/, 'ou'], [/ou(?!t)/, 'oo'], [/ow(?=\b)/, 'oh'],
     // consonants
-    [/ph/,   'f'],   [/ck/,   'k'],   [/wh/,   'w'],
-    [/th/,   'dh'],  [/kn/,   'n'],   [/wr/,   'r'],
+    [/ph/, 'f'],  [/ck/, 'k'],       [/wh/, 'w'],
+    [/th/, 'dh'], [/kn/, 'n'],       [/wr/, 'r'],
     [/c(?=[ei])/, 's'], [/que$/, 'k'],
-    // double letters
-    [/([lmns])\1/, '$1'], // un-double
+    // double / un-double
+    [/([lmns])\1/, '$1'],
   ]
 
+  function addVariant(result: string) {
+    if (result === w || result.length < 2) return
+    const cap = word[0] === word[0].toUpperCase()
+      ? result.charAt(0).toUpperCase() + result.slice(1)
+      : result
+    if (cap !== word) variants.add(cap)
+  }
+
   for (const [pattern, replacement] of rules) {
-    if (variants.size >= 3) break
-    const result = w.replace(pattern, replacement)
-    if (result !== w && result.length > 1) {
-      const cap = word[0] === word[0].toUpperCase()
-        ? result.charAt(0).toUpperCase() + result.slice(1)
-        : result
-      if (cap !== word) variants.add(cap)
-    }
+    if (variants.size >= 10) break
+    addVariant(w.replace(pattern, replacement))
   }
 
-  // Fallback: double a vowel
-  if (variants.size < 3) {
-    for (const ch of 'aeiou') {
-      if (variants.size >= 3) break
-      const idx = w.indexOf(ch)
-      if (idx !== -1) {
-        const v = w.slice(0, idx) + ch + ch + w.slice(idx + 1)
-        const cap = word[0] === word[0].toUpperCase()
-          ? v.charAt(0).toUpperCase() + v.slice(1) : v
-        if (cap !== word) variants.add(cap)
-      }
-    }
+  // Vowel doubling
+  for (const ch of 'aeiou') {
+    if (variants.size >= 10) break
+    const idx = w.indexOf(ch)
+    if (idx !== -1) addVariant(w.slice(0, idx) + ch + ch + w.slice(idx + 1))
   }
 
-  return [...variants].slice(0, 2)
+  // Consonant swaps
+  const consonantSwaps: [RegExp, string][] = [
+    [/b/, 'p'], [/p/, 'b'], [/d/, 't'], [/t/, 'd'],
+    [/g/, 'k'], [/k/, 'g'], [/f/, 'v'], [/v/, 'f'],
+    [/s/, 'z'], [/z/, 's'],
+  ]
+  for (const [pat, rep] of consonantSwaps) {
+    if (variants.size >= 10) break
+    addVariant(w.replace(pat, rep))
+  }
+
+  return [...variants].slice(0, 10)
 }
 
 // ── Text/PDF parsers ──────────────────────────────────────────────────────────
@@ -235,12 +310,14 @@ function use8BitSounds() {
   }
 }
 
-// ── TTS hook ──────────────────────────────────────────────────────────────────
+// ── TTS hook (with word-by-word speakWords + epoch cancellation) ──────────────
 
 function useTTS() {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([])
   const [voiceIndex, setVoiceIndex] = useState(0)
   const [speaking, setSpeaking] = useState(false)
+  // Epoch: increment to invalidate any running speakWords loop
+  const epochRef = useRef(0)
 
   useEffect(() => {
     function load() {
@@ -252,25 +329,59 @@ function useTTS() {
     return () => window.speechSynthesis?.removeEventListener('voiceschanged', load)
   }, [])
 
-  const speak = useCallback((text: string) => {
-    if (!window.speechSynthesis || !text.trim()) return
-    window.speechSynthesis.cancel()
+  const makeUtt = useCallback((text: string) => {
     const utt = new SpeechSynthesisUtterance(text)
     utt.voice = voices[voiceIndex] ?? null
     utt.rate = 0.88
     utt.pitch = 1.05
-    utt.onstart = () => setSpeaking(true)
-    utt.onend = () => setSpeaking(false)
-    utt.onerror = () => setSpeaking(false)
-    window.speechSynthesis.speak(utt)
+    return utt
   }, [voices, voiceIndex])
 
+  const speak = useCallback((text: string) => {
+    if (!window.speechSynthesis || !text.trim()) return
+    epochRef.current += 1          // cancel any running speakWords loop
+    window.speechSynthesis.cancel()
+    const utt = makeUtt(text)
+    utt.onstart = () => setSpeaking(true)
+    utt.onend   = () => setSpeaking(false)
+    utt.onerror = () => setSpeaking(false)
+    window.speechSynthesis.speak(utt)
+  }, [makeUtt])
+
+  // Speak words one at a time with a gap of delayMs between each.
+  // onWord is called just before each word is spoken (for avatar sync).
+  const speakWords = useCallback(async (
+    words: string[],
+    delayMs: number,
+    onWord?: (word: string) => void,
+  ) => {
+    if (!window.speechSynthesis || !words.length) return
+    epochRef.current += 1
+    const myEpoch = epochRef.current
+    window.speechSynthesis.cancel()
+    setSpeaking(true)
+
+    for (const word of words) {
+      if (epochRef.current !== myEpoch) break
+      onWord?.(word)
+      await new Promise<void>((resolve) => {
+        const utt = makeUtt(word)
+        utt.onend   = () => window.setTimeout(resolve, delayMs)
+        utt.onerror = () => resolve()
+        window.speechSynthesis.speak(utt)
+      })
+    }
+
+    if (epochRef.current === myEpoch) setSpeaking(false)
+  }, [makeUtt])
+
   const cancel = useCallback(() => {
+    epochRef.current += 1
     window.speechSynthesis?.cancel()
     setSpeaking(false)
   }, [])
 
-  return { voices, voiceIndex, setVoiceIndex, speak, cancel, speaking }
+  return { voices, voiceIndex, setVoiceIndex, speak, speakWords, cancel, speaking }
 }
 
 // ── Media recorder hook ───────────────────────────────────────────────────────
@@ -306,35 +417,39 @@ function useMediaRecorder() {
   return { recording, audioUrl, startRecording, stopRecording }
 }
 
-// ── Socket hook ───────────────────────────────────────────────────────────────
+// ── BroadcastChannel + localStorage state sync (Vercel-compatible) ────────────
 
-function useSocketState() {
-  const [sharedState, setSharedState] = useState<SessionState>(createInitialSessionState(DEFAULT_CONFIG))
-  const [connected, setConnected] = useState(false)
-  const [socketError, setSocketError] = useState('')
-  const socketRef = useRef<WebSocket | null>(null)
+function useBroadcastState() {
+  const [sharedState, setSharedState] = useState<SessionState>(() => {
+    const saved = lsGet<SessionState>(LS_STATE)
+    return saved ? { sessionSeed: 0, ...saved } : createInitialSessionState(DEFAULT_CONFIG)
+  })
+
+  const channelRef = useRef<BroadcastChannel | null>(null)
 
   useEffect(() => {
-    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-    const socket = new WebSocket(`${proto}://${window.location.hostname}:${WS_PORT}`)
-    socketRef.current = socket
-    socket.onopen = () => { setConnected(true); setSocketError('') }
-    socket.onclose = () => { setConnected(false); setSocketError('Backend offline — run `npm run dev:server`') }
-    socket.onerror = () => { setConnected(false); setSocketError('WS connection failed') }
-    socket.onmessage = (e) => {
-      const msg = JSON.parse(e.data) as ServerMessage
-      if (msg.type === 'sync') setSharedState(msg.payload)
-    }
-    return () => { socket.close(); socketRef.current = null }
+    let ch: BroadcastChannel | null = null
+    try {
+      ch = new BroadcastChannel('mouth-shore-sync')
+      channelRef.current = ch
+      ch.onmessage = (e: MessageEvent) => {
+        const msg = e.data as ServerMessage
+        if (msg.type === 'sync') setSharedState(msg.payload)
+      }
+    } catch { /* BroadcastChannel unsupported */ }
+    return () => { ch?.close(); channelRef.current = null }
   }, [])
 
-  function send(msg: ClientMessage) {
-    if (socketRef.current?.readyState === WebSocket.OPEN) {
-      socketRef.current.send(JSON.stringify(msg))
-    }
-  }
+  const send = useCallback((msg: ClientMessage) => {
+    setSharedState((prev) => {
+      const next = processClientMessage(prev, msg)
+      lsSet(LS_STATE, next)
+      channelRef.current?.postMessage({ type: 'sync', payload: next } satisfies ServerMessage)
+      return next
+    })
+  }, [])
 
-  return { sharedState, connected, socketError, send }
+  return { sharedState, send }
 }
 
 // ── URL helpers ───────────────────────────────────────────────────────────────
@@ -349,10 +464,10 @@ function splitTranscript(text: string) {
   return text.split(/\s+/).map((w) => w.trim()).filter(Boolean)
 }
 
-// ── Main App ──────────────────────────────────────────────────────────────────
+// ── Nav bar ───────────────────────────────────────────────────────────────────
 
 function ScreenNav({ current }: { current: ScreenMode }) {
-  const links: { href: string; label: string; key: ScreenMode | 'admin' }[] = [
+  const links: { href: string; label: string; key: ScreenMode }[] = [
     { href: '?screen=split',     label: 'SPLIT',     key: 'split' },
     { href: '?screen=performer', label: 'PERFORMER', key: 'performer' },
     { href: '?screen=audience',  label: 'AUDIENCE',  key: 'audience' },
@@ -367,10 +482,12 @@ function ScreenNav({ current }: { current: ScreenMode }) {
   )
 }
 
+// ── Main App ──────────────────────────────────────────────────────────────────
+
 function App() {
   const screenMode = getScreenMode()
-  const { sharedState, connected, socketError, send } = useSocketState()
-  const { speak, cancel: cancelTTS, speaking: ttsSpeaking, voices, voiceIndex, setVoiceIndex } = useTTS()
+  const { sharedState, send } = useBroadcastState()
+  const { speak, speakWords, cancel: cancelTTS, speaking: ttsSpeaking, voices, voiceIndex, setVoiceIndex } = useTTS()
   const { recording, audioUrl, startRecording, stopRecording } = useMediaRecorder()
   const sounds = use8BitSounds()
 
@@ -384,20 +501,27 @@ function App() {
   const [ttsVisemeIdx, setTtsVisemeIdx] = useState(0)
   const [avatarSeed, setAvatarSeed] = useState(AVATAR_OPTIONS[0].seed)
   const [aiGenerating, setAiGenerating] = useState(false)
+  const [ttsWordDelay, setTtsWordDelay] = useState(() => Number(localStorage.getItem(LS_DELAY) ?? 300))
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null)
 
   const config = sharedState.config
   const selectedWords = sharedState.selectedWords
-  const waves = buildWaves(config)
+  const waves = buildWaves(config, sharedState.sessionSeed)
   const activeWaves = waves
-    .map((wave) => ({
-      ...wave,
-      mouths: wave.mouths.filter(
-        (m) => !selectedWords.some((e) => e.word === m.label && e.source === m.source),
-      ),
-    }))
-    .filter((wave) => wave.mouths.length > 0)
+    .map((wave, waveIndex) => {
+      // Count words covered by all prior waves
+      const priorCount = waves.slice(0, waveIndex).reduce((n, w) => n + w.targets.length, 0)
+      const waveEndCount = priorCount + wave.targets.length
+      // Wave is done once all its target slots have been picked (right or wrong)
+      if (selectedWords.length >= waveEndCount) return null
+      // Remove ALL cards for any source word already picked in this wave
+      const pickedSources = new Set(
+        selectedWords.slice(priorCount, waveEndCount).map((e) => e.source),
+      )
+      return { ...wave, mouths: wave.mouths.filter((m) => !pickedSources.has(m.source)) }
+    })
+    .filter((w): w is NonNullable<typeof w> => w !== null)
 
   const expectedWord = config.poem[selectedWords.length] ?? null
   const mistakes = selectedWords.filter((e) => !e.isCorrect).length
@@ -411,7 +535,6 @@ function App() {
   const audiencePoem = visibleAudienceWords.map((e) => e.word).join(' ')
   const transcriptText = sharedState.transcript.finalText || sharedState.transcript.interimText || ''
 
-  // Viseme: TTS speaking → use ttsVisemeText; otherwise use transcript or clicked poem
   const baseLipText = transcriptText || audiencePoem
   const visemeFrames = getVisemeFrames(ttsSpeaking ? ttsVisemeText : baseLipText)
   const ttsVisemeFrames = getVisemeFrames(ttsVisemeText)
@@ -419,8 +542,6 @@ function App() {
     ? (ttsVisemeFrames[ttsVisemeIdx % Math.max(ttsVisemeFrames.length, 1)] ?? 'flat')
     : (visemeFrames[visemeIndex % Math.max(visemeFrames.length, 1)] ?? 'flat')
 
-  // Sync audience avatar to clicked words too (not just TTS)
-  // When a new word is added, set ttsVisemeText to that word so avatar syncs
   const lastClickedWord = selectedWords[selectedWords.length - 1]?.word ?? ''
   const prevLastWord = useRef('')
 
@@ -438,7 +559,7 @@ function App() {
     return () => window.clearInterval(t)
   }, [])
 
-  // Normal viseme cycling (for non-TTS)
+  // Normal viseme cycling
   useEffect(() => {
     const t = window.setInterval(() => {
       setVisemeIndex((i) => (i + 1) % Math.max(visemeFrames.length, 1))
@@ -463,7 +584,7 @@ function App() {
     }
   }, [activeWaves.length])
 
-  // Complete poem
+  // Complete poem fanfare
   useEffect(() => {
     if (selectedWords.length > 0 && selectedWords.length === config.poem.length && !expectedWord) {
       sounds.playComplete()
@@ -528,13 +649,10 @@ function App() {
     if (!expectedWord) return
 
     const isCorrect = mouth.label === expectedWord
-
-    // Speak the clicked word via TTS → avatar lip-syncs
     speak(mouth.label)
     setTtsVisemeText(mouth.label)
     setTtsVisemeIdx(0)
 
-    // AI generating flash
     setAiGenerating(true)
     window.setTimeout(() => setAiGenerating(false), 900)
 
@@ -556,21 +674,20 @@ function App() {
     const file = event.target.files?.[0]
     if (!file) return
     try {
-      let config: PoemConfig
+      let cfg: PoemConfig
       const name = file.name.toLowerCase()
       if (name.endsWith('.json')) {
-        config = parseConfigFile(await file.text())
+        cfg = parseConfigFile(await file.text())
       } else if (name.endsWith('.pdf')) {
         const text = await extractPDFText(file)
-        if (!text) throw new Error('Could not extract text from PDF. Please use a text-based PDF or .txt file.')
-        config = parsePlainTextPoem(text)
+        if (!text) throw new Error('Could not extract text from PDF.')
+        cfg = parsePlainTextPoem(text)
       } else {
-        // .txt / .md / anything else — treat as plain text
-        config = parsePlainTextPoem(await file.text())
+        cfg = parsePlainTextPoem(await file.text())
       }
       setUploadName(file.name)
       setUploadError('')
-      send({ type: 'update_config', payload: config })
+      send({ type: 'update_config', payload: cfg })
     } catch (err) {
       setUploadError(err instanceof Error ? err.message : 'Could not parse file.')
     }
@@ -578,6 +695,16 @@ function App() {
   }
 
   function resetSession() { send({ type: 'reset_session' }) }
+
+  // Read poem word-by-word using stored delay
+  function handleReadPoem() {
+    if (ttsSpeaking) { cancelTTS(); return }
+    const words = selectedWords.map((e) => e.word)
+    speakWords(words, ttsWordDelay, (word) => {
+      setTtsVisemeText(word)
+      setTtsVisemeIdx(0)
+    })
+  }
 
   function renderPoemBar(words: SelectedWord[]) {
     return (
@@ -625,9 +752,7 @@ function App() {
               <h1>{config.title}</h1>
             </div>
             <div className="mode-pills">
-              <span className={`socket-pill ${connected ? 'online' : 'offline'}`}>
-                {connected ? '● WS LIVE' : '○ WS DOWN'}
-              </span>
+              <span className="socket-pill online">● LOCAL</span>
               <ScreenNav current={screenMode} />
               <button type="button" className="px-btn red" onClick={resetSession}>↺ START OVER</button>
               <label className="upload-pill">
@@ -669,10 +794,7 @@ function App() {
 
             {/* Show ONLY the current (first active) wave */}
             {activeWaves[0] ? (
-              <div
-                key={activeWaves[0].id}
-                className="wave-band"
-              >
+              <div key={activeWaves[0].id} className="wave-band">
                 <p className="wave-label">WAVE {activeWaves[0].id} / {waves.length}</p>
                 <div className="mouth-grid">
                   {activeWaves[0].mouths.map((mouth, index) => {
@@ -714,16 +836,16 @@ function App() {
 
           <div className="bottom-grid">
             <article className="console-card">
-              <div className="card-head">
+              <div className="bottom-card-head">
                 <h2>GENERATED POEM</h2>
-                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div className="bottom-btns">
                   {clickedPoem && (
                     <button
                       type="button"
                       className={`px-btn green ${ttsSpeaking ? 'live' : ''}`}
-                      onClick={() => ttsSpeaking ? cancelTTS() : speak(clickedPoem)}
+                      onClick={handleReadPoem}
                     >
-                      {ttsSpeaking ? '■ STOP' : '▶ READ POEM'}
+                      {ttsSpeaking ? '■ STOP' : '▶ READ'}
                     </button>
                   )}
                   <button
@@ -740,32 +862,30 @@ function App() {
                   >
                     {recording ? '■ REC' : '● REC'}
                   </button>
+                  <div className="delay-stepper">
+                    <span className="delay-stepper-label">DLY</span>
+                    <button
+                      type="button"
+                      className="delay-step-btn"
+                      onClick={() => { const v = Math.max(0, ttsWordDelay - 100); setTtsWordDelay(v); localStorage.setItem(LS_DELAY, String(v)) }}
+                    >−</button>
+                    <span className="delay-stepper-val">{ttsWordDelay}ms</span>
+                    <button
+                      type="button"
+                      className="delay-step-btn"
+                      onClick={() => { const v = Math.min(5000, ttsWordDelay + 100); setTtsWordDelay(v); localStorage.setItem(LS_DELAY, String(v)) }}
+                    >+</button>
+                  </div>
                 </div>
               </div>
               {renderPoemBar(selectedWords)}
-              {/* Full poem as readable text — all clicked words, correct and wrong */}
-              <div className="poem-full-text">
-                {clickedPoem
-                  ? selectedWords.map((e, i) => (
-                      <span key={e.id} className={`poem-word-token ${e.isCorrect ? 'ok' : 'err'}`}>
-                        {e.word}{(i + 1) % 5 === 0 ? '\n' : ' '}
-                      </span>
-                    ))
-                  : <span className="poem-placeholder">{'> waiting for first click...'}</span>
-                }
-              </div>
-              {audioUrl && (
-                <div className="audio-controls">
-                  <audio src={audioUrl} controls />
-                </div>
-              )}
               {uploadError && <p className="error-copy">ERROR: {uploadError}</p>}
             </article>
 
             <article className="console-card">
               <h2>SYNC + TRANSCRIPT</h2>
               <ul className="mic-log">
-                <li>{connected ? 'websocket: connected' : socketError || 'websocket: offline'}</li>
+                <li>sync: local broadcast</li>
                 <li>
                   {micState === 'unsupported' ? 'stt: not supported'
                     : micState === 'blocked' ? 'stt: blocked'
@@ -841,7 +961,6 @@ function App() {
                   VISEME: {activeViseme.toUpperCase()} | {avatarSeed.toUpperCase()}
                 </p>
 
-                {/* Voice selector */}
                 {voices.length > 0 && (
                   <select
                     className="voice-select"
@@ -863,7 +982,8 @@ function App() {
                 </p>
                 <div className="subtitle-metrics">
                   <article><span>Total</span><strong>{visibleAudienceWords.length}</strong></article>
-                  <article><span>Errors</span>
+                  <article>
+                    <span>Errors</span>
                     <strong style={{ color: '#ff4444' }}>
                       {visibleAudienceWords.filter((e) => !e.isCorrect).length}
                     </strong>
@@ -904,71 +1024,67 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
   const [newText, setNewText] = useState('')
   const [editError, setEditError] = useState('')
   const [parsePreview, setParsePreview] = useState<PoemConfig | null>(null)
+  // TTS word delay — stored in localStorage, read by performer's READ POEM handler
+  const [ttsDelay, setTtsDelay] = useState<number>(() => Number(localStorage.getItem(LS_DELAY) ?? 300))
 
   useEffect(() => {
-    fetchPoems()
-    fetchSessions()
+    setPoems(loadPoems())
+    setSessions(loadSessionHistory())
   }, [])
 
-  async function fetchPoems() {
-    try {
-      const res = await fetch(`${API_BASE}/poems`)
-      setPoems(await res.json() as StoredPoem[])
-    } catch { /* offline */ }
-  }
-
-  async function fetchSessions() {
-    try {
-      const res = await fetch(`${API_BASE}/sessions`)
-      setSessions(await res.json() as SessionRecord[])
-    } catch { /* offline */ }
+  function handleDelayChange(value: number) {
+    const clamped = Math.max(0, Math.min(5000, value))
+    setTtsDelay(clamped)
+    localStorage.setItem(LS_DELAY, String(clamped))
   }
 
   function handleTextPreview() {
     setEditError('')
     try {
-      const cfg = parsePlainTextPoem(newText)
-      setParsePreview(cfg)
+      setParsePreview(parsePlainTextPoem(newText))
     } catch (e) {
       setEditError(e instanceof Error ? e.message : 'Parse error')
     }
   }
 
-  async function handleSaveNew() {
+  function handleSaveNew() {
     setEditError('')
     try {
       const cfg = parsePreview ?? parsePlainTextPoem(newText)
       cfg.title = newTitle.trim() || cfg.title
-      await fetch(`${API_BASE}/poems`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(cfg),
-      })
+      const all = loadPoems()
+      const poem: StoredPoem = { ...cfg, id: `poem-${Date.now()}`, createdAt: Date.now(), updatedAt: Date.now() }
+      const updated = [...all.filter((p) => p.id !== 'default'), poem]
+      // Keep default at front
+      const withDefault = all.find((p) => p.id === 'default')
+        ? [all.find((p) => p.id === 'default')!, ...updated.filter((p) => p.id !== 'default')]
+        : updated
+      savePoems(withDefault)
+      setPoems(loadPoems())
       setNewTitle(''); setNewText(''); setParsePreview(null)
-      fetchPoems()
     } catch (e) {
       setEditError(e instanceof Error ? e.message : 'Save failed')
     }
   }
 
-  async function handleDeletePoem(id: string) {
-    await fetch(`${API_BASE}/poems/${id}`, { method: 'DELETE' })
-    fetchPoems()
+  function handleDeletePoem(id: string) {
+    const updated = loadPoems().filter((p) => p.id !== id)
+    savePoems(updated)
+    setPoems(loadPoems())
   }
 
   function handleLoadPoem(poem: StoredPoem) {
     send({ type: 'update_config', payload: poem })
   }
 
-  async function handleUpdateVariants(poem: StoredPoem, word: string, rawVariants: string) {
-    const variants = rawVariants.split(',').map((v) => v.trim()).filter(Boolean)
-    const updated = { ...poem, variants: { ...poem.variants, [word]: variants } }
-    await fetch(`${API_BASE}/poems/${poem.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updated),
-    })
-    fetchPoems()
+  function handleUpdateVariants(poem: StoredPoem, word: string, rawVariants: string) {
+    const variantList = rawVariants.split(',').map((v) => v.trim()).filter(Boolean)
+    const updated = { ...poem, variants: { ...poem.variants, [word]: variantList }, updatedAt: Date.now() }
+    const all = loadPoems().map((p) => p.id === updated.id ? updated : p)
+    savePoems(all)
+    setPoems(loadPoems())
+    // If currently editing, refresh editing poem
+    if (editingPoem?.id === poem.id) setEditingPoem(updated)
   }
 
   return (
@@ -991,7 +1107,7 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
 
       {/* ── Poems tab ────────────────────────────────────────────────────────── */}
       {tab === 'poems' && (
-        <div>
+        <div style={{ overflowY: 'auto', flex: 1 }}>
           <h2>SAVED POEMS</h2>
           <div className="poem-list">
             {poems.map((poem) => (
@@ -1012,7 +1128,7 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
                 {editingPoem?.id === poem.id && (
                   <div style={{ width: '100%', marginTop: '8px' }}>
                     <p style={{ fontFamily: 'Press Start 2P', fontSize: '7px', color: 'var(--px-sky)', marginBottom: '8px' }}>
-                      EDIT VARIANTS (comma-separated):
+                      EDIT VARIANTS — pool of 10, 2 randomly used per game (comma-separated):
                     </p>
                     <div className="word-variants-grid">
                       {poem.poem.map((word) => (
@@ -1022,7 +1138,7 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
                             className="variant-input"
                             defaultValue={(poem.variants[word] ?? []).join(', ')}
                             onBlur={(e) => handleUpdateVariants(poem, word, e.target.value)}
-                            placeholder="var1, var2, var3"
+                            placeholder="var1, var2, ... (up to 10)"
                           />
                           <button
                             type="button"
@@ -1030,11 +1146,8 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
                             style={{ fontSize: '6px', padding: '4px 8px' }}
                             onClick={() => {
                               const auto = generatePhoneticVariants(word)
-                              const input = document.querySelector<HTMLInputElement>(
-                                `.word-variant-row input[data-word="${word}"]`,
-                              )
-                              if (input) input.value = auto.join(', ')
                               handleUpdateVariants(poem, word, auto.join(', '))
+                              setPoems(loadPoems())
                             }}
                           >
                             AUTO
@@ -1060,7 +1173,7 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
               />
             </div>
             <div>
-              <label>Paste poem text (words separated by spaces/lines — variants auto-generated)</label>
+              <label>Paste poem text (variants auto-generated)</label>
               <textarea
                 className="px-textarea"
                 value={newText}
@@ -1076,7 +1189,7 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
             {parsePreview && (
               <div style={{ border: '2px solid var(--px-green2)', padding: '8px' }}>
                 <p style={{ fontFamily: 'Press Start 2P', fontSize: '7px', color: 'var(--px-green)', margin: '0 0 6px' }}>
-                  PARSED: {parsePreview.poem.length} WORDS
+                  PARSED: {parsePreview.poem.length} WORDS — {Object.values(parsePreview.variants).reduce((a, v) => a + v.length, 0)} total variants
                 </p>
                 <div style={{ fontFamily: 'VT323', fontSize: '18px', color: '#ccc' }}>
                   {parsePreview.poem.slice(0, 20).map((w) => (
@@ -1123,7 +1236,41 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
 
       {/* ── Avatar + Voice tab ───────────────────────────────────────────────── */}
       {tab === 'avatar-voice' && (
-        <div>
+        <div style={{ overflowY: 'auto', flex: 1 }}>
+          {/* TTS word delay setting */}
+          <h2>READ POEM — WORD DELAY</h2>
+          <div className="delay-setting-row">
+            <p style={{ fontFamily: 'VT323', fontSize: '18px', color: 'var(--px-gray)', margin: '0 0 8px' }}>
+              Pause between words when reading the full poem (milliseconds):
+            </p>
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '20px' }}>
+              <input
+                type="number"
+                className="px-input delay-input"
+                value={ttsDelay}
+                min={0}
+                max={5000}
+                step={50}
+                onChange={(e) => handleDelayChange(Number(e.target.value))}
+                style={{ width: '120px' }}
+              />
+              <span style={{ fontFamily: 'VT323', fontSize: '20px', color: 'var(--px-gray)' }}>ms</span>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                {[0, 200, 500, 1000, 2000].map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    className={`px-btn ${ttsDelay === v ? 'sky' : ''}`}
+                    style={{ fontSize: '6px', padding: '4px 8px' }}
+                    onClick={() => handleDelayChange(v)}
+                  >
+                    {v}ms
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
           <h2>AVATAR SELECTION</h2>
           <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', marginBottom: '20px' }}>
             {AVATAR_OPTIONS.map((opt) => (
@@ -1160,7 +1307,7 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
           </p>
           {voices.length === 0 ? (
             <p style={{ fontFamily: 'VT323', fontSize: '18px', color: 'var(--px-orange)' }}>
-              No voices loaded yet. Try clicking in the audience panel.
+              No voices loaded yet. Visit the audience panel first.
             </p>
           ) : (
             <div style={{ display: 'grid', gap: '6px', maxHeight: '300px', overflowY: 'auto' }}>
@@ -1182,9 +1329,16 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
 
       {/* ── History tab ──────────────────────────────────────────────────────── */}
       {tab === 'history' && (
-        <div>
+        <div style={{ overflowY: 'auto', flex: 1 }}>
           <h2>SESSION HISTORY</h2>
-          <button type="button" className="px-btn sky" style={{ marginBottom: '10px' }} onClick={fetchSessions}>REFRESH</button>
+          <button
+            type="button"
+            className="px-btn sky"
+            style={{ marginBottom: '10px' }}
+            onClick={() => setSessions(loadSessionHistory())}
+          >
+            REFRESH
+          </button>
           {sessions.length === 0 ? (
             <p style={{ fontFamily: 'VT323', fontSize: '20px', color: 'var(--px-gray)' }}>
               No sessions recorded yet. Play the game first!
@@ -1195,21 +1349,13 @@ function AdminPanel({ send, voices, voiceIndex, setVoiceIndex, avatarSeed, setAv
                 <div key={s.id} className="session-row">
                   <span className="session-row-title">{s.poemTitle}</span>
                   <div className="session-row-stats">
-                    <span className="session-stat">
-                      Words: <strong>{s.selectedWords.length}/{s.totalWords}</strong>
-                    </span>
+                    <span className="session-stat">Words: <strong>{s.selectedWords.length}/{s.totalWords}</strong></span>
                     <span className={`session-stat ${s.accuracy < 70 ? 'bad' : ''}`}>
                       Accuracy: <strong>{s.accuracy}%</strong>
                     </span>
-                    <span className="session-stat bad">
-                      Mistakes: <strong>{s.mistakes}</strong>
-                    </span>
-                    <span className="session-stat">
-                      Duration: <strong>{Math.round((s.endedAt - s.startedAt) / 1000)}s</strong>
-                    </span>
-                    <span className="session-stat">
-                      {new Date(s.endedAt).toLocaleTimeString()}
-                    </span>
+                    <span className="session-stat bad">Mistakes: <strong>{s.mistakes}</strong></span>
+                    <span className="session-stat">Duration: <strong>{Math.round((s.endedAt - s.startedAt) / 1000)}s</strong></span>
+                    <span className="session-stat">{new Date(s.endedAt).toLocaleTimeString()}</span>
                   </div>
                   {s.selectedWords.length > 0 && (
                     <div style={{ marginTop: '6px', fontFamily: 'VT323', fontSize: '16px', color: 'var(--px-gray)' }}>
