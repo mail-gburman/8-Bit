@@ -112,6 +112,10 @@ h1 {
   margin: 0;
   line-height: 1.4;
   color: var(--px-black);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
 }
 
 h2 {
